@@ -1,0 +1,52 @@
+{
+  "name": "pi-model-scout",
+  "version": "0.1.0",
+  "description": "Pi provider extension: automatic model discovery for OpenAI-compatible endpoints (vLLM, LM Studio, Ollama, LiteLLM, etc.), including Unsloth Studio connected services.",
+  "type": "module",
+  "license": "MIT",
+  "author": "YOUR NAME <you@example.com>",
+  "homepage": "https://github.com/cobomi-lab/pi-model-scout#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cobomi-lab/pi-model-scout.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cobomi-lab/pi-model-scout/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "openai-compatible",
+    "model-discovery",
+    "unsloth",
+    "vllm",
+    "lm-studio",
+    "ollama",
+    "litellm"
+  ],
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/openai-discovery.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
