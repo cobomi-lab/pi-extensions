@@ -1,6 +1,6 @@
 {
   "name": "pi-model-scout",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi provider extension: automatic model discovery for OpenAI-compatible endpoints (vLLM, LM Studio, Ollama, LiteLLM, etc.), including Unsloth Studio connected services.",
   "type": "module",
   "license": "MIT",
