@@ -1,140 +1,165 @@
 # pi-model-scout — development and release tasks
-# Run `just` to list recipes.
-
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-name := `node -p "require('./package.json').name"`
-version := `node -p "require('./package.json').version"`
-remote := "origin"
-branch := "main"
+NAME := `node -p "require('./package.json').name"`
+VERSION := `node -p "require('./package.json').version"`
+GIT_REMOTE := 'origin'
+RELEASE_BRANCH := 'main'
+# release tags look like v<version> (created by npm version)
+TAG_PREFIX := 'v'
+# registry the package is published to
+NPM_REGISTRY := 'https://registry.npmjs.org/'
 
-# List available recipes
+alias t := typecheck
+alias c := clean
+alias ck := check
+alias pk := pack
+alias rel := release
+
+# list all available recipes
 default:
-    @just --list --unsorted
+    just --list
 
-# ─── Development ────────────────────────────────────────────────────────────
-
-# Install dev dependencies (TypeScript, pi types)
-setup:
-    npm install --no-audit --no-fund
-
-# Type-check the extension
-typecheck:
-    @[ -d node_modules ] || just setup
-    npm run typecheck
-
-# Start pi with the extension loaded from this checkout (no install)
-try *args:
-    pi -e . {{ args }}
-
-# List models pi sees with the extension loaded (uses your real models.json)
-models:
-    pi -e . --list-models
-
-# Smoke test against a fake OpenAI-compatible server, isolated from your ~/.pi config
-smoke:
+[private]
+require-node:
     #!/usr/bin/env bash
     set -euo pipefail
-    tmp=$(mktemp -d)
-    trap 'kill $server 2>/dev/null || true; rm -rf "$tmp"' EXIT
-    cat > "$tmp/server.mjs" <<'EOF'
-    import http from "node:http";
-    const s = http.createServer((q, r) => {
-      r.setHeader("content-type", "application/json");
-      if (q.url === "/v1/models") return r.end(JSON.stringify({ data: [{ id: "qwen3-8b", max_model_len: 40960 }, { id: "llava-7b" }] }));
-      r.statusCode = 404; r.end("{}");
-    }).listen(0, "127.0.0.1", () => console.log(s.address().port));
-    EOF
-    node "$tmp/server.mjs" > "$tmp/port" & server=$!
-    for _ in $(seq 50); do [ -s "$tmp/port" ] && break; sleep 0.1; done
-    port=$(cat "$tmp/port")
-    mkdir -p "$tmp/agent"
-    echo "{\"providers\":{\"smoke\":{\"baseUrl\":\"http://127.0.0.1:$port/v1\",\"apiKey\":\"none\",\"discoverModels\":true}}}" > "$tmp/agent/models.json"
-    out=$(PI_CODING_AGENT_DIR="$tmp/agent" pi -e . --list-models 2>&1)
-    echo "$out"
-    for m in qwen3-8b llava-7b; do
-      grep -q "smoke .*$m" <<<"$out" || { echo "✗ smoke test failed: $m not discovered"; exit 1; }
-    done
-    echo "✓ smoke test passed"
+    if ! command -v node >/dev/null; then
+        echo "error: node is not installed -- see https://nodejs.org/" >&2
+        exit 1
+    fi
+    major=$(node -p 'process.versions.node.split(".")[0]')
+    if [ "$major" -lt 20 ]; then
+        echo "error: node >= 20 is required (found $(node -v))" >&2
+        exit 1
+    fi
 
-# Typecheck + smoke test
-test: typecheck smoke
+[private]
+require-deps: require-node
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -d node_modules ] || npm install --no-audit --no-fund
 
-# ─── Local install ──────────────────────────────────────────────────────────
+# install dev dependencies (TypeScript, pi types)
+[group: 'setup']
+setup: require-node
+    npm install --no-audit --no-fund
 
-# Install this checkout into pi (user scope)
+# ─── pi (try the extension from this checkout) ──────────────────────────────
+
+# usage: just try                -> pi with this extension loaded
+#        just try --model x      -> extra args go to pi
+[group: 'pi']
+try *ARGS: require-deps
+    pi -e . {{ ARGS }}
+
+# list the models pi sees with the extension loaded (uses your real models.json)
+[group: 'pi']
+models: require-deps
+    pi -e . --list-models
+
+# install this checkout into pi (user scope)
+[group: 'pi']
 install-local:
     pi install "$(pwd)"
 
-# Remove the local install from pi
+# remove the local install from pi
+[group: 'pi']
 uninstall-local:
     pi remove "$(pwd)"
 
-# ─── Packaging ──────────────────────────────────────────────────────────────
+# ─── checks ─────────────────────────────────────────────────────────────────
 
-# Fail if placeholders (YOUR_NAME, YOUR_GITHUB_USER, …) are still present
+# type-check the extension with tsc
+[group: 'check']
+typecheck: require-deps
+    npm run typecheck
+
+# fail if placeholders (YOUR_NAME, YOUR_GITHUB_USER, …) are still present
+[group: 'check']
 check-placeholders:
     @! grep -nE "YOUR_[A-Z_]+|YOUR NAME|you@example\.com" package.json LICENSE README.md \
         || { echo "✗ replace the placeholders above before releasing"; exit 1; }
     @echo "✓ no placeholders"
 
-# Show what would be published
+# show what would be published
+[group: 'check']
 pack-preview:
     npm pack --dry-run
 
-# Build the npm tarball locally for inspection
+# all pre-release checks (what CI should run)
+[group: 'check']
+check: typecheck check-placeholders pack-preview
+
+# ─── packaging ──────────────────────────────────────────────────────────────
+
+# build the npm tarball locally for inspection
+[group: 'build']
 pack:
     npm pack
 
-# All pre-release checks
-check: check-placeholders test pack-preview
-
-# ─── Git ────────────────────────────────────────────────────────────────────
-
-# Initialise the git repo and add the GitHub remote (url: git@github.com:USER/pi-model-scout.git)
-git-init url:
-    [ -d .git ] || git init -b {{ branch }}
-    git remote get-url {{ remote }} >/dev/null 2>&1 || git remote add {{ remote }} {{ url }}
-    git add -A
-    git diff --cached --quiet || git commit -m "Initial commit: {{ name }} v{{ version }}"
-    git push -u {{ remote }} {{ branch }}
-
-# Fail unless the working tree is clean and on the release branch
-[private]
-ensure-clean:
-    @[ -d .git ] || { echo "✗ not a git repo — run: just git-init <url>"; exit 1; }
-    @[ "$(git branch --show-current)" = "{{ branch }}" ] || { echo "✗ not on {{ branch }}"; exit 1; }
-    @git diff --quiet && git diff --cached --quiet || { echo "✗ uncommitted changes"; exit 1; }
-
-# ─── Release ────────────────────────────────────────────────────────────────
-
-# Bump version (patch|minor|major|x.y.z), commit, and tag
-bump level="patch": ensure-clean
-    npm version {{ level }} -m "Release v%s"
-
-# Push the current commit and tags to GitHub (makes `pi install git:...@vX.Y.Z` work)
-push: ensure-clean
-    git push {{ remote }} {{ branch }} --follow-tags
-
-# Publish to npm (makes `pi install npm:<name>` work)
-publish: ensure-clean check
-    @npm whoami >/dev/null 2>&1 || { echo "✗ not logged in — run: npm login"; exit 1; }
-    npm publish
-
-# Full release: check, bump, push to git, publish to npm
-release level="patch": ensure-clean check
-    just bump {{ level }}
-    just push
-    just publish
-    @echo "✓ released {{ name }} v$(node -p "require('./package.json').version")"
-
-# Release to git only (no npm)
-release-git level="patch": ensure-clean check
-    just bump {{ level }}
-    just push
-
-# ─── Housekeeping ───────────────────────────────────────────────────────────
-
-# Remove build artefacts and dependencies
+# remove node_modules and packed tarballs
+[group: 'build']
 clean:
-    rm -rf node_modules package-lock.json *.tgz
+    rm -rf node_modules *.tgz
+
+# ─── git ────────────────────────────────────────────────────────────────────
+
+[private]
+require-clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(git branch --show-current)" != "{{ RELEASE_BRANCH }}" ]; then
+        echo "error: not on the {{ RELEASE_BRANCH }} branch" >&2
+        exit 1
+    fi
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        echo "error: the working tree has uncommitted changes -- commit or stash them first" >&2
+        exit 1
+    fi
+
+# ─── release ────────────────────────────────────────────────────────────────
+
+[private]
+require-token:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "${NPM_TOKEN:-}" ]; then
+        exit 0
+    fi
+    if ! npm whoami --registry {{ NPM_REGISTRY }} >/dev/null 2>&1; then
+        echo "error: not logged in to the npm registry and NPM_TOKEN is not set" >&2
+        echo "       log in with: npm login" >&2
+        exit 1
+    fi
+
+# usage: just bump patch          -> next patch version
+#        just bump 0.2.0          -> exact version
+# set the version with npm, then commit and tag it
+[group: 'release']
+bump LEVEL_OR_VERSION: require-clean
+    npm version {{ LEVEL_OR_VERSION }} --no-git-tag-version
+    git add package.json
+    git commit -m "Bump {{ NAME }} version to $(node -p "require('./package.json').version")"
+    git tag -a {{ TAG_PREFIX }}$(node -p "require('./package.json').version") -m "Release {{ NAME }} v$(node -p "require('./package.json').version")"
+
+# push the current branch and the tag for the version in package.json (makes `pi install git:...@vX.Y.Z` work)
+[group: 'release']
+push: require-clean
+    git push --atomic {{ GIT_REMOTE }} HEAD "refs/tags/{{ TAG_PREFIX }}$(node -p "require('./package.json').version")"
+
+# publish to npm (token: NPM_TOKEN, else the local npm login)
+[group: 'release']
+publish: require-token
+    npm publish --registry {{ NPM_REGISTRY }}
+
+# usage: just release patch       -> full release with next version
+#        just release 0.2.0       -> full release at an exact version
+# check, bump, push and publish to npm
+[group: 'release']
+release LEVEL_OR_VERSION: require-clean check (bump LEVEL_OR_VERSION) push publish
+    @echo "✓ released {{ NAME }} v$(node -p "require('./package.json').version")"
+
+# release to git only (no npm)
+[group: 'release']
+release-git LEVEL_OR_VERSION: require-clean check (bump LEVEL_OR_VERSION) push
