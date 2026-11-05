@@ -32,7 +32,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/openai-discovery.ts"
+      "./extensions/pi-model-scout.ts"
     ],
     "image": "https://raw.githubusercontent.com/cobomi-lab/pi-model-scout/main/assets/cobomi-logo.png"
   },

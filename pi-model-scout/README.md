@@ -110,7 +110,7 @@ Context length is taken from `context_length` or `max_model_len` in the `/models
 ## Development
 
 ```bash
-pi -e ./extensions/openai-discovery.ts --list-models   # load without installing
+pi -e ./extensions/pi-model-scout.ts --list-models   # load without installing
 ```
 
 Pi loads TypeScript directly, so no build step is needed. Pi provides `@earendil-works/pi-coding-agent` at runtime, so it is a `peerDependency`. It is also a `devDependency`, used only for type checking:
