@@ -4,7 +4,7 @@
   "description": "Pi provider extension: automatic model discovery for OpenAI-compatible endpoints (vLLM, LM Studio, Ollama, LiteLLM, etc.), including Unsloth Studio connected services.",
   "type": "module",
   "license": "MIT",
-  "author": "YOUR NAME <you@example.com>",
+  "author": "cobomi GmbH <info@cobomi.com>",
   "homepage": "https://github.com/cobomi-lab/pi-model-scout#readme",
   "repository": {
     "type": "git",
