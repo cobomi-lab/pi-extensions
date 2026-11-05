@@ -9,6 +9,9 @@ RELEASE_BRANCH := 'main'
 TAG_PREFIX := 'v'
 # registry the package is published to
 NPM_REGISTRY := 'https://registry.npmjs.org/'
+# OS keychain entry holding the npm publish token (macOS Keychain / Linux libsecret)
+KEYCHAIN_SERVICE := 'npm-publish-token'
+KEYCHAIN_ACCOUNT := 'cobomi-lab'
 
 alias t := typecheck
 alias c := clean
@@ -120,6 +123,61 @@ require-clean:
 
 # ─── release ────────────────────────────────────────────────────────────────
 
+# store the npm publish token in the OS keychain (prompts for it, replaces an existing one)
+[group: 'token']
+token-add:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+        Darwin)
+            # -w as the last option makes `security` prompt, keeping the token off the command line
+            security add-generic-password -U -s "{{ KEYCHAIN_SERVICE }}" -a "{{ KEYCHAIN_ACCOUNT }}" \
+                -l "npm token ({{ NAME }})" -w
+            ;;
+        Linux)
+            command -v secret-tool >/dev/null || {
+                echo "error: secret-tool not found -- install libsecret-tools (Debian/Ubuntu) or libsecret (Fedora)" >&2
+                exit 1
+            }
+            read -rsp "npm token: " token; echo
+            [ -n "$token" ] || { echo "error: empty token" >&2; exit 1; }
+            printf '%s' "$token" | secret-tool store --label="npm token ({{ NAME }})" \
+                service "{{ KEYCHAIN_SERVICE }}" account "{{ KEYCHAIN_ACCOUNT }}"
+            ;;
+        *) echo "error: no supported keychain on $(uname -s)" >&2; exit 1 ;;
+    esac
+    echo "✓ token stored ({{ KEYCHAIN_SERVICE }} / {{ KEYCHAIN_ACCOUNT }})"
+
+# remove the npm publish token from the OS keychain
+[group: 'token']
+token-remove:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! {{ just_executable() }} --justfile {{ quote(justfile()) }} token-get >/dev/null 2>&1; then
+        echo "no token stored ({{ KEYCHAIN_SERVICE }} / {{ KEYCHAIN_ACCOUNT }})"
+        exit 0
+    fi
+    case "$(uname -s)" in
+        Darwin) security delete-generic-password -s "{{ KEYCHAIN_SERVICE }}" -a "{{ KEYCHAIN_ACCOUNT }}" >/dev/null ;;
+        Linux)  secret-tool clear service "{{ KEYCHAIN_SERVICE }}" account "{{ KEYCHAIN_ACCOUNT }}" ;;
+    esac
+    echo "✓ token removed ({{ KEYCHAIN_SERVICE }} / {{ KEYCHAIN_ACCOUNT }})"
+
+# print the stored token to stdout (fails if there is none)
+[private]
+token-get:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+        Darwin) security find-generic-password -s "{{ KEYCHAIN_SERVICE }}" -a "{{ KEYCHAIN_ACCOUNT }}" -w 2>/dev/null ;;
+        Linux)
+            command -v secret-tool >/dev/null || exit 1
+            token=$(secret-tool lookup service "{{ KEYCHAIN_SERVICE }}" account "{{ KEYCHAIN_ACCOUNT }}" 2>/dev/null)
+            [ -n "$token" ] && printf '%s\n' "$token"
+            ;;
+        *) exit 1 ;;
+    esac
+
 [private]
 require-token:
     #!/usr/bin/env bash
@@ -127,9 +185,12 @@ require-token:
     if [ -n "${NPM_TOKEN:-}" ]; then
         exit 0
     fi
+    if {{ just_executable() }} --justfile {{ quote(justfile()) }} token-get >/dev/null 2>&1; then
+        exit 0
+    fi
     if ! npm whoami --registry {{ NPM_REGISTRY }} >/dev/null 2>&1; then
-        echo "error: not logged in to the npm registry and NPM_TOKEN is not set" >&2
-        echo "       log in with: npm login" >&2
+        echo "error: no npm credentials -- NPM_TOKEN is not set, no keychain token, not logged in" >&2
+        echo "       run: just token-add   (or: npm login)" >&2
         exit 1
     fi
 
@@ -139,7 +200,7 @@ require-token:
 [group: 'release']
 bump LEVEL_OR_VERSION: require-clean
     npm version {{ LEVEL_OR_VERSION }} --no-git-tag-version
-    git add package.json
+    git add package.json package-lock.json
     git commit -m "Bump {{ NAME }} version to $(node -p "require('./package.json').version")"
     git tag -a {{ TAG_PREFIX }}$(node -p "require('./package.json').version") -m "Release {{ NAME }} v$(node -p "require('./package.json').version")"
 
@@ -148,16 +209,32 @@ bump LEVEL_OR_VERSION: require-clean
 push: require-clean
     git push --atomic {{ GIT_REMOTE }} HEAD "refs/tags/{{ TAG_PREFIX }}$(node -p "require('./package.json').version")"
 
-# publish to npm (token: NPM_TOKEN, else the local npm login)
+# publish to npm (token: NPM_TOKEN, else the keychain token, else the local npm login)
 [group: 'release']
 publish: require-token
-    npm publish --registry {{ NPM_REGISTRY }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    token="${NPM_TOKEN:-}"
+    if [ -z "$token" ]; then
+        token=$({{ just_executable() }} --justfile {{ quote(justfile()) }} token-get 2>/dev/null || true)
+    fi
+    if [ -z "$token" ]; then
+        exec npm publish --registry {{ NPM_REGISTRY }}
+    fi
+    # pass the token to npm as an env-only config key: never on a command line or on disk
+    NPM_TOKEN="$token" exec node -e '
+        const registry = process.argv[1];
+        const { host, pathname } = new URL(registry);
+        const env = { ...process.env, [`npm_config_//${host}${pathname}:_authToken`]: process.env.NPM_TOKEN };
+        const r = require("child_process").spawnSync("npm", ["publish", "--registry", registry], { stdio: "inherit", env });
+        process.exit(r.status ?? 1);
+    ' "{{ NPM_REGISTRY }}"
 
 # usage: just release patch       -> full release with next version
 #        just release 0.2.0       -> full release at an exact version
 # check, bump, push and publish to npm
 [group: 'release']
-release LEVEL_OR_VERSION: require-clean check (bump LEVEL_OR_VERSION) push publish
+release LEVEL_OR_VERSION: require-clean require-token check (bump LEVEL_OR_VERSION) push publish
     @echo "✓ released {{ NAME }} v$(node -p "require('./package.json').version")"
 
 # release to git only (no npm)
